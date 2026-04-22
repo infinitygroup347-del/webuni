@@ -8,7 +8,10 @@
       "Bash(curl -s http://localhost:3000/api/weeks)",
       "WebFetch(domain:webuni.vercel.app)",
       "Bash(npm uninstall *)",
-      "WebFetch(domain:firebasestorage.googleapis.com)"
+      "WebFetch(domain:firebasestorage.googleapis.com)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }
