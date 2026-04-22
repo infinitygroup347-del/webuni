@@ -4,11 +4,14 @@ const multer = require('multer');
 const admin = require('firebase-admin');
 
 // ===== FIREBASE INIT =====
-const privateKey = process.env.FIREBASE_PRIVATE_KEY
-  ?.replace(/\\n/g, '\n')   // literal \n → newline
-  ?.replace(/^"|"$/g, '');  // quita comillas extra si las hay
+let bucket = null;
+let firebaseError = null;
 
 try {
+  const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '')
+    .replace(/\\n/g, '\n')
+    .replace(/^"|"$/g, '');
+
   admin.initializeApp({
     credential: admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
@@ -17,11 +20,21 @@ try {
     }),
     storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
   });
+
+  bucket = admin.storage().bucket();
+  console.log('Firebase OK — bucket:', process.env.FIREBASE_STORAGE_BUCKET);
 } catch (e) {
-  console.error('Firebase init error:', e.message);
+  firebaseError = e.message;
+  console.error('Firebase init FAILED:', e.message);
 }
 
-const bucket = admin.storage().bucket();
+function requireBucket(res) {
+  if (!bucket) {
+    res.status(500).json({ error: 'Firebase no inicializado', detail: firebaseError });
+    return false;
+  }
+  return true;
+}
 
 // ===== EXPRESS =====
 const app = express();
@@ -65,6 +78,7 @@ async function makePublic(file) {
 // Subir archivo a una semana
 app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
   try {
+    if (!requireBucket(res)) return;
     if (!req.file) return res.status(400).json({ error: 'No se subió ningún archivo' });
 
     const week = req.params.week;
@@ -85,6 +99,7 @@ app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
 // Obtener archivos de una semana
 app.get('/api/files/:week', async (req, res) => {
   try {
+    if (!requireBucket(res)) return;
     const [firebaseFiles] = await bucket.getFiles({ prefix: weekPrefix(req.params.week) });
 
     const files = await Promise.all(
@@ -112,6 +127,7 @@ app.get('/api/files/:week', async (req, res) => {
 // Eliminar archivo
 app.delete('/api/files/:week/*', async (req, res) => {
   try {
+    if (!requireBucket(res)) return;
     const filePath = req.params[0]
       ? `${weekPrefix(req.params.week)}${req.params[0]}`
       : req.query.path;
@@ -128,6 +144,7 @@ app.delete('/api/files/:week/*', async (req, res) => {
 // Resumen de todas las semanas
 app.get('/api/weeks', async (req, res) => {
   try {
+    if (!requireBucket(res)) return;
     const [allFiles] = await bucket.getFiles();
     const counts = {};
 
@@ -149,6 +166,12 @@ app.get('/api/weeks', async (req, res) => {
 
 // ===== HEALTH CHECK =====
 app.get('/api/health', async (req, res) => {
+  if (!bucket) return res.status(500).json({ ok: false, error: firebaseError, env: {
+    project: !!process.env.FIREBASE_PROJECT_ID,
+    email: !!process.env.FIREBASE_CLIENT_EMAIL,
+    key: !!process.env.FIREBASE_PRIVATE_KEY,
+    bucket: !!process.env.FIREBASE_STORAGE_BUCKET,
+  }});
   try {
     await bucket.exists();
     res.json({ ok: true, bucket: bucket.name });
