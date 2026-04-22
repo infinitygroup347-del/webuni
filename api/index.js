@@ -39,6 +39,7 @@ app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
     const blob = await put(pathname, req.file.buffer, {
       access: 'public',
       contentType: req.file.mimetype,
+      allowOverwrite: true,
     });
 
     res.json({ success: true, filename: blob.pathname, originalname: req.file.originalname, size: req.file.size, week, url: blob.url });
