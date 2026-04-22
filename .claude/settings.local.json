@@ -6,7 +6,8 @@
       "Bash(npm install *)",
       "Bash(node server.js)",
       "Bash(curl -s http://localhost:3000/api/weeks)",
-      "WebFetch(domain:webuni.vercel.app)"
+      "WebFetch(domain:webuni.vercel.app)",
+      "Bash(npm uninstall *)"
     ]
   }
 }
