@@ -1,64 +1,38 @@
 const express = require('express');
 const multer = require('multer');
-const { GoogleAuth } = require('google-auth-library');
 
-// ===== GOOGLE AUTH =====
-const BUCKET = process.env.FIREBASE_STORAGE_BUCKET;
-const GCS = 'https://storage.googleapis.com/storage/v1';
-const GCS_UP = 'https://storage.googleapis.com/upload/storage/v1';
-
-let authClient = null;
-
-function getAuth() {
-  if (!authClient) {
-    const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '')
-      .replace(/\\n/g, '\n')
-      .replace(/^"|"$/g, '');
-
-    authClient = new GoogleAuth({
-      credentials: {
-        type: 'service_account',
-        project_id: process.env.FIREBASE_PROJECT_ID,
-        client_email: process.env.FIREBASE_CLIENT_EMAIL,
-        private_key: privateKey,
-      },
-      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-    });
-  }
-  return authClient;
-}
-
-async function getToken() {
-  const client = await getAuth().getClient();
-  const { token } = await client.getAccessToken();
-  return token;
-}
+const BUCKET = process.env.FIREBASE_STORAGE_BUCKET; // webuni-96ff7.firebasestorage.app
+const API_KEY = process.env.FIREBASE_API_KEY;        // AIzaSy...
+const BASE = `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(BUCKET)}/o`;
 
 // ===== STORAGE HELPERS =====
-async function gcsUpload(buffer, path, contentType) {
-  const token = await getToken();
-  const url = `${GCS_UP}/b/${encodeURIComponent(BUCKET)}/o?uploadType=media&name=${encodeURIComponent(path)}&predefinedAcl=publicRead`;
+async function uploadFile(buffer, path, contentType) {
+  const url = `${BASE}?name=${encodeURIComponent(path)}&key=${API_KEY}`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': contentType },
+    headers: { 'Content-Type': contentType },
     body: buffer,
   });
-  if (!res.ok) throw new Error(`Upload failed: ${await res.text()}`);
-  return `https://storage.googleapis.com/${BUCKET}/${path}`;
+  if (!res.ok) throw new Error(`Firebase upload error: ${await res.text()}`);
+  return publicUrl(path);
 }
 
-async function gcsList(prefix) {
-  const token = await getToken();
-  const url = `${GCS}/b/${encodeURIComponent(BUCKET)}/o?prefix=${encodeURIComponent(prefix)}`;
-  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+async function listFiles(prefix) {
+  const url = `${BASE}?prefix=${encodeURIComponent(prefix)}&key=${API_KEY}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Firebase list error: ${await res.text()}`);
   const data = await res.json();
   return data.items || [];
 }
 
-async function gcsDelete(path) {
-  const token = await getToken();
-  const url = `${GCS}/b/${encodeURIComponent(BUCKET)}/o/${encodeURIComponent(path)}`;
-  await fetch(url, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+async function deleteFile(path) {
+  const url = `${BASE}/${encodeURIComponent(path)}?key=${API_KEY}`;
+  const res = await fetch(url, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Firebase delete error: ${await res.text()}`);
+}
+
+function publicUrl(path) {
+  return `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/${encodeURIComponent(path)}?alt=media`;
 }
 
 // ===== EXPRESS =====
@@ -85,22 +59,12 @@ const upload = multer({
 
 // ===== ROUTES =====
 
-app.get('/api/health', async (req, res) => {
-  try {
-    await getToken();
-    res.json({ ok: true, bucket: BUCKET });
-  } catch (e) {
-    res.status(500).json({
-      ok: false,
-      error: e.message,
-      env: {
-        project: !!process.env.FIREBASE_PROJECT_ID,
-        email: !!process.env.FIREBASE_CLIENT_EMAIL,
-        key: !!process.env.FIREBASE_PRIVATE_KEY,
-        bucket: !!process.env.FIREBASE_STORAGE_BUCKET,
-      }
-    });
-  }
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    bucket: BUCKET,
+    hasKey: !!API_KEY,
+  });
 });
 
 app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
@@ -109,7 +73,7 @@ app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
     const week = req.params.week;
     const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._\-\s]/g, '_');
     const path = `semana-${week}/${Date.now()}-${safeName}`;
-    const url = await gcsUpload(req.file.buffer, path, req.file.mimetype);
+    const url = await uploadFile(req.file.buffer, path, req.file.mimetype);
     res.json({ success: true, filename: path, originalname: req.file.originalname, size: req.file.size, week, url });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -118,13 +82,13 @@ app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
 
 app.get('/api/files/:week', async (req, res) => {
   try {
-    const items = await gcsList(`semana-${req.params.week}/`);
+    const items = await listFiles(`semana-${req.params.week}/`);
     const files = items.map(item => ({
       filename: item.name,
       originalname: item.name.split('/').pop().replace(/^\d+-/, ''),
       size: parseInt(item.size, 10),
-      date: item.updated,
-      url: `https://storage.googleapis.com/${BUCKET}/${item.name}`,
+      date: item.timeCreated,
+      url: publicUrl(item.name),
     }));
     res.json({ files });
   } catch (e) {
@@ -136,7 +100,7 @@ app.delete('/api/files/:week', async (req, res) => {
   try {
     const path = decodeURIComponent(req.query.path || '');
     if (!path) return res.status(400).json({ error: 'Falta el path' });
-    await gcsDelete(path);
+    await deleteFile(path);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -145,7 +109,7 @@ app.delete('/api/files/:week', async (req, res) => {
 
 app.get('/api/weeks', async (req, res) => {
   try {
-    const items = await gcsList('semana-');
+    const items = await listFiles('semana-');
     const counts = {};
     items.forEach(item => {
       const match = item.name.match(/^semana-(\d+)\//);
