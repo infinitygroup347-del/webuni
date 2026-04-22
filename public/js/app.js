@@ -115,7 +115,7 @@ async function renderWeekFiles(week) {
         </div>
         <div class="file-actions">
           <a href="${file.url}" download="${file.originalname}" class="btn-icon" title="Descargar">⬇️</a>
-          <button class="btn-icon danger" title="Eliminar" onclick="deleteFile(${week}, '${encodeURIComponent(file.filename)}', this)">🗑️</button>
+          <button class="btn-icon danger" title="Eliminar" onclick="deleteFile(${week}, '${encodeURIComponent(file.url)}', this)">🗑️</button>
         </div>`;
       grid.appendChild(card);
     });

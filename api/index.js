@@ -1,25 +1,7 @@
 const express = require('express');
 const multer = require('multer');
-const { initializeApp, getApps } = require('firebase/app');
-const {
-  getStorage, ref,
-  uploadBytes, getDownloadURL,
-  listAll, deleteObject, getMetadata,
-} = require('firebase/storage');
+const { put, list, del } = require('@vercel/blob');
 
-// ===== FIREBASE =====
-const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY,
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-};
-
-const firebaseApp = getApps().length
-  ? getApps()[0]
-  : initializeApp(firebaseConfig);
-
-const storage = getStorage(firebaseApp);
-
-// ===== EXPRESS =====
 const app = express();
 app.use(express.json());
 
@@ -44,11 +26,7 @@ const upload = multer({
 // ===== ROUTES =====
 
 app.get('/api/health', (req, res) => {
-  res.json({
-    ok: true,
-    bucket: process.env.FIREBASE_STORAGE_BUCKET,
-    hasKey: !!process.env.FIREBASE_API_KEY,
-  });
+  res.json({ ok: true, storage: 'vercel-blob', hasToken: !!process.env.BLOB_READ_WRITE_TOKEN });
 });
 
 app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
@@ -56,13 +34,14 @@ app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No se subió ningún archivo' });
     const week = req.params.week;
     const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._\-\s]/g, '_');
-    const path = `semana-${week}/${Date.now()}-${safeName}`;
+    const pathname = `semana-${week}/${Date.now()}-${safeName}`;
 
-    const fileRef = ref(storage, path);
-    await uploadBytes(fileRef, req.file.buffer, { contentType: req.file.mimetype });
-    const url = await getDownloadURL(fileRef);
+    const blob = await put(pathname, req.file.buffer, {
+      access: 'public',
+      contentType: req.file.mimetype,
+    });
 
-    res.json({ success: true, filename: path, originalname: req.file.originalname, size: req.file.size, week, url });
+    res.json({ success: true, filename: blob.pathname, originalname: req.file.originalname, size: req.file.size, week, url: blob.url });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -70,21 +49,14 @@ app.post('/api/upload/:week', upload.single('file'), async (req, res) => {
 
 app.get('/api/files/:week', async (req, res) => {
   try {
-    const weekRef = ref(storage, `semana-${req.params.week}`);
-    const result = await listAll(weekRef);
-
-    const files = await Promise.all(
-      result.items.map(async item => {
-        const [url, meta] = await Promise.all([getDownloadURL(item), getMetadata(item)]);
-        return {
-          filename: item.fullPath,
-          originalname: item.name.replace(/^\d+-/, ''),
-          size: meta.size,
-          date: meta.timeCreated,
-          url,
-        };
-      })
-    );
+    const { blobs } = await list({ prefix: `semana-${req.params.week}/` });
+    const files = blobs.map(b => ({
+      filename: b.pathname,
+      originalname: b.pathname.split('/').pop().replace(/^\d+-/, ''),
+      size: b.size,
+      date: b.uploadedAt,
+      url: b.url,
+    }));
     res.json({ files });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -93,9 +65,9 @@ app.get('/api/files/:week', async (req, res) => {
 
 app.delete('/api/files/:week', async (req, res) => {
   try {
-    const path = decodeURIComponent(req.query.path || '');
-    if (!path) return res.status(400).json({ error: 'Falta el path' });
-    await deleteObject(ref(storage, path));
+    const url = decodeURIComponent(req.query.path || '');
+    if (!url) return res.status(400).json({ error: 'Falta la URL del archivo' });
+    await del(url);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -105,11 +77,12 @@ app.delete('/api/files/:week', async (req, res) => {
 app.get('/api/weeks', async (req, res) => {
   try {
     const counts = {};
-    const weeks = Array.from({ length: 16 }, (_, i) => i + 1);
-    await Promise.all(weeks.map(async w => {
-      const result = await listAll(ref(storage, `semana-${w}`));
-      if (result.items.length > 0) counts[w] = result.items.length;
-    }));
+    await Promise.all(
+      Array.from({ length: 16 }, (_, i) => i + 1).map(async w => {
+        const { blobs } = await list({ prefix: `semana-${w}/` });
+        if (blobs.length > 0) counts[w] = blobs.length;
+      })
+    );
     res.json({ weeks: Object.entries(counts).map(([week, fileCount]) => ({ week, fileCount })) });
   } catch (e) {
     res.status(500).json({ error: e.message });
